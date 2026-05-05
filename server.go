@@ -22,6 +22,18 @@ type Server struct {
 	Router      *PathRouter
 	Attributes  map[CIPAttribute]any
 	Logger      *slog.Logger
+
+	// ExplicitMux, if non-nil, receives Set_Attribute_Single and any
+	// other explicit-message services that fall outside the native
+	// tag-read/write/Identity-Object dispatch. The handler is given a
+	// parsed (Service, Class, Instance, Attribute, Data) request and
+	// returns a CIP general-status response; the server adapter handles
+	// the wire framing.
+	//
+	// When nil, the server's behaviour is identical to upstream: tag
+	// reads/writes go through Router as before, the Identity Object is
+	// served from Server.Attributes, and unknown services are logged.
+	ExplicitMux ExplicitHandler
 }
 
 // an instance of serverTCPHandler will be created for every incoming connection to the EIP tcp port.
@@ -306,8 +318,20 @@ func (h *serverTCPHandler) sendUnitData(hdr eipHeader) error {
 		if err != nil {
 			return fmt.Errorf("problem handling getAttrSingle %w", err)
 		}
+	case CIPService_SetAttributeSingle:
+		err = h.connectedExplicitMux(service, items)
+		if err != nil {
+			return fmt.Errorf("problem handling setAttrSingle %w", err)
+		}
 	default:
-		h.server.Logger.Warn("Got unknown service at send unit data handler", "service", service)
+		if h.server.ExplicitMux != nil {
+			err = h.connectedExplicitMux(service, items)
+			if err != nil {
+				return fmt.Errorf("problem handling explicit-mux service 0x%02x: %w", byte(service), err)
+			}
+		} else {
+			h.server.Logger.Warn("Got unknown service at send unit data handler", "service", service)
+		}
 	}
 	h.server.Logger.Debug("send unit data service requested", "service", service)
 	return nil

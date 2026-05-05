@@ -32,6 +32,9 @@ func (h *serverTCPHandler) unconnectedData(item CIPItem) error {
 			return fmt.Errorf("problem handling forward close. %w", err)
 		}
 
+	case CIPService_SetAttributeSingle:
+		return h.unconnectedExplicitMux(service, &item)
+
 	case 0x52:
 		// unconnected send?
 		var pathsize byte
@@ -66,12 +69,20 @@ func (h *serverTCPHandler) unconnectedData(item CIPItem) error {
 			return h.unconnectedServiceRead(item)
 		case CIPService_GetAttributeSingle:
 			return h.unconnectedServiceGetAttrSingle(item)
+		case CIPService_SetAttributeSingle:
+			return h.unconnectedExplicitMux(emService, &item)
 		//case cipService_GetAttributeAll:
 		//return h.unconnectedServiceGetAttrAll(item)
 		default:
+			if h.server.ExplicitMux != nil {
+				return h.unconnectedExplicitMux(emService, &item)
+			}
 			return fmt.Errorf("don't know how to handle service '%v'", emService)
 
 		}
+	}
+	if h.server.ExplicitMux != nil {
+		return h.unconnectedExplicitMux(service, &item)
 	}
 	return nil
 }
