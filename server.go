@@ -229,7 +229,11 @@ func (h *serverTCPHandler) serve(srv *Server) error {
 			return fmt.Errorf("problem reading eip header. %w", err)
 		}
 		h.context = eipHdr.Context
-		h.server.Logger.Info("eip frame",
+		// Demoted to Debug: every PLC poll generates one of these, which
+		// at ~1.5/sec idle cadence overwhelms operational logs. Session
+		// lifecycle (TCP accept, ForwardOpen, connection ended) and
+		// unexpected commands are still logged at higher levels.
+		h.server.Logger.Debug("eip frame",
 			"remote", h.conn.RemoteAddr().String(),
 			"command", fmt.Sprintf("0x%04x", uint16(eipHdr.Command)),
 			"length", eipHdr.Length,
