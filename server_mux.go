@@ -261,12 +261,13 @@ func (h *serverTCPHandler) connectedExplicitMux(service CIPService, items []CIPI
 // unconnectedExplicitMux is the unconnected-dispatch entry point invoked from
 // unconnectedData when the service is Set_Attribute_Single or any other
 // service that falls through to the explicit mux. The caller has already
-// consumed the service byte; item is positioned at the path-size word.
+// consumed the service byte; item is positioned at the path-size byte.
 //
-// Unconnected explicit messages carry: path-size word, EPATH, then optional
-// service data.
+// Unconnected explicit messages carry: path-size byte (in 16-bit words),
+// EPATH, then optional service data — per CIP Vol 1 §3-4.4.1. There is no
+// pad byte between the size and the EPATH.
 func (h *serverTCPHandler) unconnectedExplicitMux(service CIPService, item *CIPItem) error {
-	pathSize, err := item.Uint16()
+	pathSize, err := item.Byte()
 	if err != nil {
 		return fmt.Errorf("read path size: %w", err)
 	}

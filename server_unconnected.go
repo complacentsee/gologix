@@ -18,6 +18,11 @@ func (h *serverTCPHandler) unconnectedData(item CIPItem) error {
 		if err != nil {
 			return fmt.Errorf("problem handling forward open. %w", err)
 		}
+		// forwardOpen has already sent the response. Returning here
+		// prevents the post-switch ExplicitMux fallthrough from running
+		// against the now-consumed item — without this, it reads garbage
+		// as path-size and emits a duplicate reply that confuses the PLC.
+		return nil
 
 	case CIPService_LargeForwardOpen:
 		item.Reset()
@@ -25,12 +30,14 @@ func (h *serverTCPHandler) unconnectedData(item CIPItem) error {
 		if err != nil {
 			return fmt.Errorf("problem handling large forward open. %w", err)
 		}
+		return nil
 	case CIPService_ForwardClose:
 		item.Reset()
 		err = h.forwardClose(item)
 		if err != nil {
 			return fmt.Errorf("problem handling forward close. %w", err)
 		}
+		return nil
 
 	case CIPService_SetAttributeSingle:
 		return h.unconnectedExplicitMux(service, &item)

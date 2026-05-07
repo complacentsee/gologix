@@ -132,12 +132,16 @@ func (srv *Server) serveTCP() error {
 			srv.Logger.Error("problem with tcp accept", "error", err)
 			continue
 		}
+		srv.Logger.Info("tcp accepted", "remote", conn.RemoteAddr().String(),
+			"local", conn.LocalAddr().String())
 		// create a new handler and kick off its serve method to handle the connection
 		h := serverTCPHandler{conn: conn, server: srv}
 		go func() {
 			err := h.serve(srv)
 			if err != nil {
-				srv.Logger.Warn("Error on connection %v. %v", h.conn.RemoteAddr().String(), err)
+				srv.Logger.Warn("connection ended", "remote", h.conn.RemoteAddr().String(), "err", err)
+			} else {
+				srv.Logger.Info("connection closed", "remote", h.conn.RemoteAddr().String())
 			}
 		}()
 	}
@@ -225,7 +229,12 @@ func (h *serverTCPHandler) serve(srv *Server) error {
 			return fmt.Errorf("problem reading eip header. %w", err)
 		}
 		h.context = eipHdr.Context
-		h.server.Logger.Debug("New Context", "context", h.context)
+		h.server.Logger.Info("eip frame",
+			"remote", h.conn.RemoteAddr().String(),
+			"command", fmt.Sprintf("0x%04x", uint16(eipHdr.Command)),
+			"length", eipHdr.Length,
+			"session", eipHdr.SessionHandle,
+			"status", eipHdr.Status)
 		switch eipHdr.Command {
 		case cipCommandRegisterSession:
 			err = h.registerSession(eipHdr)
@@ -249,7 +258,10 @@ func (h *serverTCPHandler) serve(srv *Server) error {
 			if err != nil {
 				return fmt.Errorf("problem with sendListServices %w", err)
 			}
-
+		default:
+			h.server.Logger.Warn("unhandled eip command",
+				"remote", h.conn.RemoteAddr().String(),
+				"command", fmt.Sprintf("0x%04x", uint16(eipHdr.Command)))
 		}
 	}
 

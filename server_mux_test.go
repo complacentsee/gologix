@@ -206,8 +206,10 @@ func TestConnectedExplicitMux_ConsumesPrelude(t *testing.T) {
 }
 
 // TestUnconnectedExplicitMux_ConsumesPrelude exercises the unconnected
-// dispatch entry point, which expects path_size as uint16 (path-size byte +
-// pad byte) — a gologix convention preserved across this patch.
+// dispatch entry point. Per CIP Vol 1 §3-4.4.1, an unconnected explicit
+// request carries path_size as a single byte (in 16-bit words) immediately
+// followed by the EPATH, with no pad byte between them. Real Studio 5000
+// MSG instructions transmit exactly this shape.
 func TestUnconnectedExplicitMux_ConsumesPrelude(t *testing.T) {
 	var got ExplicitRequest
 	srv := NewServer(NewRouter())
@@ -217,7 +219,7 @@ func TestUnconnectedExplicitMux_ConsumesPrelude(t *testing.T) {
 	})
 
 	itemData := []byte{
-		0x03, 0x00, // path_size as uint16 (3 words = 6 bytes, gologix convention with pad byte)
+		0x03,       // path_size byte (3 words = 6 bytes)
 		0x20, 0x04, // class 0x04
 		0x24, 0x01, // instance 1
 		0x30, 0x03, // attribute 3
@@ -259,5 +261,61 @@ func TestDispatchExplicit_PathExceedsItem(t *testing.T) {
 	}
 	if resp.Status != CIPStatus_PathSegmentError {
 		t.Errorf("status=0x%02x, want 0x04 (PathSegmentError)", byte(resp.Status))
+	}
+}
+
+// TestUnconnectedData_ForwardOpen_DoesNotInvokeExplicitMux is a regression
+// test for the fall-through bug in unconnectedData's switch: the
+// CIPService_ForwardOpen case used to call forwardOpen() (which sends its
+// own reply) and then fall past the switch to the post-switch
+// `return h.unconnectedExplicitMux(service, &item)`, which read garbage
+// from the consumed item and emitted a duplicate reply that confused the
+// PLC. Studio 5000 cached-connected MSGs (ConnectedFlag=2) silently failed
+// this way. The fix adds explicit `return nil` to each Forward_* case;
+// this test asserts that contract.
+func TestUnconnectedData_ForwardOpen_DoesNotInvokeExplicitMux(t *testing.T) {
+	muxCalls := 0
+	srv := NewServer(NewRouter())
+	srv.ExplicitMux = ExplicitHandlerFunc(func(_ context.Context, _ ExplicitRequest) ExplicitResponse {
+		muxCalls++
+		return ExplicitResponse{Status: CIPStatus_OK}
+	})
+
+	// Hand-crafted minimal Forward_Open request. Field layout matches
+	// msgEIPForwardOpen_Standard exactly; values are arbitrary except
+	// TransportTrigger != 1 (so forwardOpen skips the IO-connection
+	// startup path) and ConnPathSize = 2 words = 4 bytes of trailing
+	// connection path.
+	fwOpen := []byte{
+		byte(CIPService_ForwardOpen), // Service = 0x54
+		0x02,                         // PathSize (request, 2 words)
+		0x20, 0x06,                   // ClassType + Class (Connection Manager)
+		0x24, 0x01,                   // InstanceType + Instance
+		0x0A, 0x05,                   // Priority, TimeoutTicks
+		0x00, 0x00, 0x00, 0x00,       // OTConnectionID
+		0x00, 0x00, 0x00, 0x00,       // TOConnectionID
+		0x42, 0x00,                   // ConnectionSerialNumber (LE)
+		0x99, 0x99,                   // VendorID (LE)
+		0x01, 0x00, 0x00, 0x00,       // OriginatorSerialNumber (LE)
+		0x07, 0x00, 0x00, 0x00,       // Multiplier
+		0x00, 0x10, 0x00, 0x00,       // OTRPI
+		0x80, 0x06,                   // OTNetworkConnParams
+		0x00, 0x10, 0x00, 0x00,       // TORPI
+		0x80, 0x06,                   // TONetworkConnParams
+		0x00,                         // TransportTrigger (0 = explicit, skips ioConnection)
+		0x02,                         // ConnPathSize (2 words = 4 bytes)
+		0x20, 0x04, 0x24, 0x01,       // ConnPath: class 0x04, instance 1
+	}
+	item := CIPItem{Header: cipItemHeader{ID: cipItem_UnconnectedData}, Data: fwOpen, Pos: 0}
+
+	h := &serverTCPHandler{server: srv, conn: &nopConn{}}
+	if err := h.unconnectedData(item); err != nil {
+		t.Fatalf("unconnectedData: %v", err)
+	}
+
+	if muxCalls != 0 {
+		t.Errorf("ExplicitMux invoked %d time(s) after Forward_Open; want 0 — "+
+			"this indicates the post-switch fall-through bug has regressed",
+			muxCalls)
 	}
 }
