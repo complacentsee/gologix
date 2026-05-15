@@ -141,6 +141,41 @@ func (client *Client) Disconnect() error {
 	return nil
 }
 
+// closeAfterIOError marks the client as disconnected and closes the
+// underlying TCP socket without attempting the polite Forward_Close
+// handshake. Use this from send_recv_data's error paths where the
+// socket has already proven unusable — sending Forward_Close over a
+// dead socket just wastes another SocketTimeout (10s default), which
+// doubles the time it takes the caller to learn that the link is
+// gone. The caller will reconnect on its next operation via
+// AutoConnect, or via an external watchdog.
+//
+// Idempotent: returns nil if the client is already disconnected /
+// disconnecting (nothing to do).
+func (client *Client) closeAfterIOError() error {
+	if err := client.startDisconnect(); err != nil {
+		// Already disconnected/disconnecting — nothing to do.
+		return nil
+	}
+	defer func() {
+		client.mutex.Lock()
+		client.connStatus = connectionStatusDisconnected
+		client.mutex.Unlock()
+	}()
+
+	if client.keepAliveRunning {
+		close(client.cancel_keepalive)
+	}
+
+	if client.conn != nil {
+		if cerr := client.conn.Close(); cerr != nil {
+			client.Logger.Debug("close-after-io-error: conn.Close error", slog.Any("err", cerr))
+		}
+	}
+	client.Logger.Info("connection closed after I/O error", slog.String("controllerIp", client.Controller.IpAddress))
+	return nil
+}
+
 // Cancels keepalive if KeepAliveAutoStart is false. Use force to cancel keepalive regardless.
 // If forced, the keepalive will not resume unless the client is reconnected or KeepAlive is triggered
 func (client *Client) KeepAliveCancel(force bool) error {

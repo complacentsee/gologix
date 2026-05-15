@@ -86,21 +86,20 @@ func (client *Client) send_recv_data(cmd CIPCommand, msgs ...any) (eipHeader, *b
 	err = client.sendData(buffer)
 	if err != nil {
 		client.mutex.Unlock()
-		err2 := client.Disconnect()
-		if err2 != nil {
-			return eipHeader{}, nil, fmt.Errorf("error disconnecting after send error %w: %w", err, err2)
-		}
-		return eipHeader{}, nil, fmt.Errorf("error sending data resulting in forced disconnect: %w", err)
+		// Don't try a polite Disconnect — the socket has already
+		// proven unusable. Disconnect's Forward_Close attempt would
+		// hit the same SocketTimeout we just spent, doubling
+		// detection latency for the caller. Just close the socket;
+		// AutoConnect (or an external watchdog) picks up reconnect.
+		_ = client.closeAfterIOError()
+		return eipHeader{}, nil, fmt.Errorf("error sending data; connection closed: %w", err)
 	}
 
 	hdr, buf, err := client.recvData()
 	client.mutex.Unlock()
 	if err != nil {
-		err2 := client.Disconnect()
-		if err2 != nil {
-			return hdr, buf, fmt.Errorf("error disconnecting after recvError %w: %w", err, err2)
-		}
-		return hdr, buf, fmt.Errorf("error receiving data resulting in forced disconnect: %w", err)
+		_ = client.closeAfterIOError()
+		return hdr, buf, fmt.Errorf("error receiving data; connection closed: %w", err)
 	}
 	return hdr, buf, nil
 }
