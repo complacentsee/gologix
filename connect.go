@@ -265,7 +265,16 @@ func (client *Client) KeepAlive() {
 			}
 
 		case <-client.cancel_keepalive:
-			client.KeepAliveAutoStart = false
+			// Exit this goroutine, but leave KeepAliveAutoStart alone.
+			// The cancel channel is closed by Disconnect on EVERY drop
+			// (including transient send/recv socket errors from
+			// send_recv_data's error path), so flipping the policy flag
+			// here would permanently disable the keepalive after the
+			// first transient outage — Connect()'s `if KeepAliveAutoStart`
+			// re-start check would skip relaunching the goroutine on
+			// the next AutoConnect. Callers who genuinely want to stop
+			// the policy use KeepAliveCancel(force=true), which sets
+			// the flag explicitly.
 			return
 		}
 	}
