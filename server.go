@@ -22,6 +22,17 @@ type Server struct {
 	Router      *PathRouter
 	Attributes  map[CIPAttribute]any
 	Logger      *slog.Logger
+
+	// ExplicitMux, when set, receives explicit CIP messages that the built-in
+	// handlers don't cover -- and, for anything wrapped in Unconnected_Send,
+	// receives it in preference to them, together with the wrapper's route
+	// path. That is what lets a handler stand in for a whole network of
+	// devices reached through this one address rather than for a single
+	// device sitting at it.
+	//
+	// Leave it nil and the server behaves exactly as it did before: tag
+	// reads and writes go to Router, Identity comes from Attributes.
+	ExplicitMux ExplicitHandler
 }
 
 // an instance of serverTCPHandler will be created for every incoming connection to the EIP tcp port.

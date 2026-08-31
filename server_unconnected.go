@@ -15,6 +15,22 @@ func (h *serverTCPHandler) unconnectedData(item CIPItem) error {
 	if err != nil {
 		return fmt.Errorf("problem unmarshling service %w", err)
 	}
+	// An installed ExplicitMux stands in for a whole network of devices, so
+	// it must see every explicit message -- including the ones addressed
+	// straight at this address with no Unconnected_Send wrapper, which the
+	// built-in Identity handlers below would otherwise answer from the
+	// server's single Attributes map. The connection-management services are
+	// the exception: forward open and close belong to the transport, not to
+	// any emulated device, and 0x52 needs its wrapper unpacked first.
+	if h.server.ExplicitMux != nil {
+		switch service {
+		case CIPService_ForwardOpen, CIPService_LargeForwardOpen, CIPService_ForwardClose, 0x52:
+			// handled by the switch below
+		default:
+			return h.unconnectedExplicitMux(service, &item, explicitContext{})
+		}
+	}
+
 	switch service {
 	case CIPService_ForwardOpen:
 		item.Reset()
@@ -86,11 +102,28 @@ func (h *serverTCPHandler) unconnectedData(item CIPItem) error {
 		if err != nil {
 			return fmt.Errorf("error getting embedded size. %w", err)
 		}
+
+		// Everything after the embedded message is the wrapper's own
+		// trailing route path -- the segments naming where the originator
+		// wants this message delivered. Capture both boundaries now, while
+		// item.Pos still points at the start of the embedded message;
+		// once the embedded service is dispatched the position has moved.
+		ctxt := unconnectedSendContext(&item, int(embedded_size))
+
 		var emService CIPService
 		err = item.DeSerialize(&emService)
 		if err != nil {
 			return fmt.Errorf("error getting embedded service. %w", err)
 		}
+
+		// An ExplicitMux takes the whole embedded message, route path and
+		// all, and decides for itself which device the request is for. That
+		// is the only way a handler can emulate more than one device behind
+		// this address, so it outranks the built-in single-device handlers.
+		if h.server.ExplicitMux != nil {
+			return h.unconnectedExplicitMux(emService, &item, ctxt)
+		}
+
 		switch emService {
 		case CIPService_Write:
 			return h.unconnectedServiceWrite(item)
@@ -705,4 +738,49 @@ func (h *serverTCPHandler) sendUnconnectedUnitDataReply(s CIPService) error {
 		return err
 	}
 	return h.send(cipCommandSendUnitData, itemdata)
+}
+
+// unconnectedSendContext works out where an Unconnected_Send's embedded
+// message ends and its trailing route path begins.
+//
+// The wrapper's layout after the embedded message size is (CIP Vol 1
+// SS 3-5.5.3):
+//
+//	embedded message   embeddedSize bytes
+//	pad                1 byte, only when embeddedSize is odd
+//	route path size    1 byte, in 16-bit words
+//	reserved           1 byte
+//	route path         routePathSize*2 bytes
+//
+// item.Pos must be sitting at the first byte of the embedded message. The
+// returned context bounds the embedded message and carries the route path;
+// a request whose trailer is missing or truncated yields a nil route rather
+// than an error, so a malformed wrapper still reaches the handler and gets a
+// CIP-level answer instead of a dropped connection.
+func unconnectedSendContext(item *CIPItem, embeddedSize int) explicitContext {
+	ctxt := explicitContext{}
+	if embeddedSize <= 0 {
+		return ctxt
+	}
+
+	end := item.Pos + embeddedSize
+	if end > len(item.Data) {
+		return ctxt
+	}
+	ctxt.DataEnd = end
+
+	trailer := end + embeddedSize%2 // skip the pad byte on an odd-length message
+	if trailer+2 > len(item.Data) {
+		return ctxt
+	}
+
+	routeWords := int(item.Data[trailer])
+	routeStart := trailer + 2 // skip the reserved byte
+	routeEnd := routeStart + routeWords*2
+	if routeWords == 0 || routeEnd > len(item.Data) {
+		return ctxt
+	}
+
+	ctxt.Route = append([]byte(nil), item.Data[routeStart:routeEnd]...)
+	return ctxt
 }
